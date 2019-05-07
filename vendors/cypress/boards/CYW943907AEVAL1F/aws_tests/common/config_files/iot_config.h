@@ -19,7 +19,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-/* This file contains configuration settings for the demos. */
+/* This file contains configuration settings for the tests. */
 
 #ifndef IOT_CONFIG_H_
 #define IOT_CONFIG_H_
@@ -30,7 +30,7 @@
 /* Library logging configuration. */
 #define IOT_LOG_LEVEL_GLOBAL             IOT_LOG_NONE
 
-/* Set the task pool stack size and priority on ST. */
+/* Set the task pool stack size and priority on Cypress. */
 #define IOT_THREAD_DEFAULT_STACK_SIZE    5 * configMINIMAL_STACK_SIZE
 
 /* Include the common configuration file for FreeRTOS. */
