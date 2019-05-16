@@ -48,6 +48,8 @@
             CONFIG_BLE_NUMERIC_COMPARISON_DEMO_ENABLED
 */
 
+#define CONFIG_MQTT_DEMO_ENABLED
+
 /* Individual demo task entry definitions */
 #if defined( CONFIG_MQTT_DEMO_ENABLED )
     #define DEMO_entryFUNCTION                              RunMqttDemo

@@ -97,6 +97,11 @@
 #define _MQTT_TIMEOUT_MS                          ( 5000 )
 
 /**
+ * @brief Delay between the cert rotations
+ */
+#define _CERT_ROTATION_DELAY_MS   ( 20000 )
+
+/**
  * @brief The Last Will and Testament topic name in this demo.
  *
  * The MQTT server will publish a message to this topic name if this client is
@@ -737,68 +742,40 @@ static void _cleanupDemo( void )
     IotMqtt_Cleanup();
 }
 
-
-
-/*-----------------------------------------------------------*/
-
-/**
- * @brief The function that runs the MQTT demo, called by the demo runner.
- *
- * @param[in] awsIotMqttMode Specify if this demo is running with the AWS IoT
- * MQTT server. Set this to `false` if using another MQTT server.
- * @param[in] pIdentifier NULL-terminated MQTT client identifier.
- * @param[in] pNetworkServerInfo Passed to the MQTT connect function when
- * establishing the MQTT connection.
- * @param[in] pNetworkCredentialInfo Passed to the MQTT connect function when
- * establishing the MQTT connection.
- * @param[in] pNetworkInterface The network interface to use for this demo.
- *
- * @return `EXIT_SUCCESS` if the demo completes successfully; `EXIT_FAILURE` otherwise.
- */
-int RunMqttDemo( bool awsIotMqttMode,
+int brev_demo_current_cert_is_working( bool awsIotMqttMode,
                  const char * pIdentifier,
                  void * pNetworkServerInfo,
                  void * pNetworkCredentialInfo,
                  const IotNetworkInterface_t * pNetworkInterface )
 {
-    /* Return value of this function and the exit status of this program. */
-    int status = EXIT_SUCCESS;
+    int status;
 
     /* Handle of the MQTT connection used in this demo. */
     IotMqttConnection_t mqttConnection = IOT_MQTT_CONNECTION_INITIALIZER;
+
+    /* Flag for tracking which cleanup functions must be called. */
+    int connectionEstablished = false;
 
     /* Counts the number of incoming PUBLISHES received (and allows the demo
      * application to wait on incoming PUBLISH messages). */
     IotSemaphore_t publishesReceived;
 
-    /* Topics used as both topic filters and topic names in this demo. */
+    /* Subscribe Topics */
     const char * pTopics[ _TOPIC_FILTER_COUNT ] =
     {
         IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/1",
         IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/2",
         IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/3",
-        IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/4",
+        IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/4"
     };
 
-    /* Flags for tracking which cleanup functions must be called. */
-    bool librariesInitialized = false, connectionEstablished = false;
-
-    /* Initialize the libraries required for this demo. */
-    status = _initializeDemo();
-
-    if( status == EXIT_SUCCESS )
-    {
-        /* Mark the libraries as initialized. */
-        librariesInitialized = true;
-
-        /* Establish a new MQTT connection. */
-        status = _establishMqttConnection( awsIotMqttMode,
-                                           pIdentifier,
-                                           pNetworkServerInfo,
-                                           pNetworkCredentialInfo,
-                                           pNetworkInterface,
-                                           &mqttConnection );
-    }
+    /* Establish a new MQTT connection. */
+    status = _establishMqttConnection( awsIotMqttMode,
+                                       pIdentifier,
+                                       pNetworkServerInfo,
+                                       pNetworkCredentialInfo,
+                                       pNetworkInterface,
+                                       &mqttConnection );
 
     if( status == EXIT_SUCCESS )
     {
@@ -847,6 +824,104 @@ int RunMqttDemo( bool awsIotMqttMode,
     if( connectionEstablished == true )
     {
         IotMqtt_Disconnect( mqttConnection, 0 );
+    }
+    return status;
+}
+
+int brev_demo_gen_csr()
+{
+    return EXIT_SUCCESS;
+}
+int brev_demo_get_new_cert()
+{
+    return EXIT_SUCCESS;
+}
+int brev_demo_rotate_cert()
+{
+    return EXIT_SUCCESS;
+}
+
+/*-----------------------------------------------------------*/
+
+/**
+ * @brief The function that runs the MQTT demo, called by the demo runner.
+ *
+ * @param[in] awsIotMqttMode Specify if this demo is running with the AWS IoT
+ * MQTT server. Set this to `false` if using another MQTT server.
+ * @param[in] pIdentifier NULL-terminated MQTT client identifier.
+ * @param[in] pNetworkServerInfo Passed to the MQTT connect function when
+ * establishing the MQTT connection.
+ * @param[in] pNetworkCredentialInfo Passed to the MQTT connect function when
+ * establishing the MQTT connection.
+ * @param[in] pNetworkInterface The network interface to use for this demo.
+ *
+ * @return `EXIT_SUCCESS` if the demo completes successfully; `EXIT_FAILURE` otherwise.
+ */
+int RunMqttDemo( bool awsIotMqttMode,
+                 const char * pIdentifier,
+                 void * pNetworkServerInfo,
+                 void * pNetworkCredentialInfo,
+                 const IotNetworkInterface_t * pNetworkInterface )
+{
+
+    int status = EXIT_SUCCESS;
+
+    /* Flags for tracking which cleanup functions must be called. */
+    bool librariesInitialized = false;
+
+    /* Initialize the libraries required for this demo. */
+    status = _initializeDemo();
+
+    if( status == EXIT_SUCCESS )
+    {
+        /* Mark the libraries as initialized. */
+        librariesInitialized = true;
+
+        while (1)
+        {
+            /* 
+             * Sequence is:
+             *  1) Verify MQTT works with current cert: connect, sub/pub, disconnect
+             *  2) Gen CSR
+             *  3) Get new cert: connect, sub/pub, disconnect
+             *  4) Rotate certs
+             */
+            status = brev_demo_current_cert_is_working(
+                awsIotMqttMode,
+                pIdentifier,
+                pNetworkServerInfo,
+                pNetworkCredentialInfo,
+                pNetworkInterface);
+
+            if (status != EXIT_SUCCESS)
+            {
+                IotLogInfo( "Current cert is not working.");
+                break;
+            }
+
+            status = brev_demo_gen_csr();
+            if (status != EXIT_SUCCESS)
+            {
+                IotLogInfo( "Could not generate CSR.");
+                break;
+            }
+
+            status = brev_demo_get_new_cert();
+            if (status != EXIT_SUCCESS)
+            {
+                IotLogInfo( "Could not get new cert.");
+                break;
+            }
+
+            status = brev_demo_rotate_cert();
+            if (status != EXIT_SUCCESS)
+            {
+                IotLogInfo( "Could not get new cert.");
+                break;
+            }
+            IotClock_SleepMs(_CERT_ROTATION_DELAY_MS);
+        }
+
     }
 
     /* Clean up libraries if they were initialized. */
