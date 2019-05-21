@@ -45,7 +45,28 @@
 
 /* Brev Demo include */
 #include "aws_clientcredential_keys.h"
+#include "aws_clientcredential.h"
 #include "aws_brev_cert_rotate.h"
+
+/**
+ * Brev Demo simulated storeage: 
+ *      cr_state - store in NV memory
+ *      cr_serial_number - store in NV memory
+ *      cr_certificate - store in secure element
+ *      cr_private_key - store in secure element
+ *      cr_csr - big chuck of RAM, make sure it's big enough, but not too big
+ */
+#define _CR_SERIAL_NUMBER_SIZE   ( sizeof( SERIAL_NUMBER ) + 1 )
+#define _CR_CERTIFICATE_SIZE     ( sizeof( keyCLIENT_CERTIFICATE_PEM ) + 1 )
+#define _CR_CSR_SIZE             ( sizeof( key_FIRST_CSR_PEM ) + 1 )  
+#define _CR_PRIVATE_KEY_SIZE     ( sizeof( keyCLIENT_PRIVATE_KEY_PEM ) + 1 )
+#define _CERT_ROTATION_DELAY_MS  ( 20000 )
+
+static CERT_ROTATE_STATE _cr_state;
+static char _cr_serial_number[ _CR_SERIAL_NUMBER_SIZE ];
+static char _cr_certificate[ _CR_CERTIFICATE_SIZE ];
+static char _cr_private_key[ _CR_PRIVATE_KEY_SIZE ];
+static char _cr_csr[ _CR_CSR_SIZE ];
 
 
 /**
@@ -54,24 +75,12 @@
  *
  * Provide default values for undefined configuration settings.
  */
-#ifndef IOT_DEMO_MQTT_TOPIC_PREFIX
-    #define IOT_DEMO_MQTT_TOPIC_PREFIX           "iotdemo"
-#endif
-#ifndef IOT_DEMO_MQTT_PUBLISH_BURST_SIZE
-    #define IOT_DEMO_MQTT_PUBLISH_BURST_SIZE     ( 10 )
-#endif
-#ifndef IOT_DEMO_MQTT_PUBLISH_BURST_COUNT
-    #define IOT_DEMO_MQTT_PUBLISH_BURST_COUNT    ( 10 )
-#endif
-/** @endcond */
+#define IOT_DEMO_MQTT_TOPIC_PREFIX "test/dev/"
 
-/* Validate MQTT demo configuration settings. */
-#if IOT_DEMO_MQTT_PUBLISH_BURST_SIZE <= 0
-    #error "IOT_DEMO_MQTT_PUBLISH_BURST_SIZE cannot be 0 or negative."
-#endif
-#if IOT_DEMO_MQTT_PUBLISH_BURST_COUNT <= 0
-    #error "IOT_DEMO_MQTT_PUBLISH_BURST_COUNT cannot be 0 or negative."
-#endif
+/*
+ * Publish Topic Length
+ */
+#define _PUB_TOPIC_LENGTH          ( 30 )
 
 /**
  * @brief The first characters in the client identifier. A timestamp is appended
@@ -102,11 +111,6 @@
 #define _MQTT_TIMEOUT_MS                          ( 5000 )
 
 /**
- * @brief Delay between the cert rotations
- */
-#define _CERT_ROTATION_DELAY_MS   ( 20000 )
-
-/**
  * @brief The Last Will and Testament topic name in this demo.
  *
  * The MQTT server will publish a message to this topic name if this client is
@@ -130,26 +134,19 @@
 #define _WILL_MESSAGE_LENGTH                      ( ( size_t ) ( sizeof( _WILL_MESSAGE ) - 1 ) )
 
 /**
- * @brief How many topic filters will be used in this demo.
+ * @brief Number of susubscribe filter topics
  */
-#define _TOPIC_FILTER_COUNT                       ( 4 )
-
-/**
- * @brief The length of each topic filter.
- *
- * For convenience, all topic filters are the same length.
- */
-#define _TOPIC_FILTER_LENGTH                      ( ( uint16_t ) ( sizeof( IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/1" ) - 1 ) )
+#define _SUB_TOPIC_FILTER_COUNT                   ( 1 )
 
 /**
  * @brief Format string of the PUBLISH messages in this demo.
  */
-#define _PUBLISH_PAYLOAD_FORMAT                   "Hello world %d!"
+#define _PUBLISH_PAYLOAD_FORMAT                   "{\"csr\": \"%s\"}"
 
 /**
  * @brief Size of the buffer that holds the PUBLISH messages in this demo.
  */
-#define _PUBLISH_PAYLOAD_BUFFER_LENGTH            ( sizeof( _PUBLISH_PAYLOAD_FORMAT ) + 2 )
+#define _PUBLISH_PAYLOAD_BUFFER_LENGTH            ( sizeof( _PUBLISH_PAYLOAD_FORMAT ) + _CR_CSR_SIZE + 2)
 
 /**
  * @brief The maximum number of times each PUBLISH in this demo will be retried.
@@ -183,23 +180,6 @@
  */
 #define _ACKNOWLEDGEMENT_MESSAGE_BUFFER_LENGTH    ( sizeof( _ACKNOWLEDGEMENT_MESSAGE_FORMAT ) + 2 )
 
-/**
- * Brev Demo simulated storeage: 
- *      cr_state - store in NV memory
- *      cr_serial_number - store in NV memory
- *      cr_certificate - store in secure element
- *      cr_private_key - store in secure element
- *      cr_csr - big chuck of RAM, make sure it's big enough, but not too big
- */
-#define _CR_SERIAL_NUMBER_SIZE   ( sizeof( SERIAL_NUMBER ) + 1 )
-#define _CR_CERTIFICATE_SIZE     ( sizeof( keyCLIENT_CERTIFICATE_PEM ) + 1 )
-#define _CR_CSR_SIZE             ( sizeof( key_FIRST_CSR_PEM ) + 1 )
-#define _CR_PRIVATE_KEY_SIZE             ( sizeof( keyCLIENT_PRIVATE_KEY_PEM ) + 1 )
-static CERT_ROTATE_STATE _cr_state;
-static char _cr_serial_number[ _CR_SERIAL_NUMBER_SIZE ];
-static char _cr_certificate[ _CR_CERTIFICATE_SIZE ];
-static char _cr_private_key[ _CR_PRIVATE_KEY_SIZE ];
-static char _cr_csr[ _CR_CSR_SIZE ];
 
 /*-----------------------------------------------------------*/
 
@@ -209,42 +189,6 @@ int RunMqttDemo( bool awsIotMqttMode,
                  void * pNetworkServerInfo,
                  void * pNetworkCredentialInfo,
                  const IotNetworkInterface_t * pNetworkInterface );
-
-/*-----------------------------------------------------------*/
-
-/**
- * @brief Called by the MQTT library when an operation completes.
- *
- * The demo uses this callback to determine the result of PUBLISH operations.
- * @param[in] param1 The number of the PUBLISH that completed, passed as an intptr_t.
- * @param[in] pOperation Information about the completed operation passed by the
- * MQTT library.
- */
-static void _operationCompleteCallback( void * param1,
-                                        IotMqttCallbackParam_t * const pOperation )
-{
-    intptr_t publishCount = ( intptr_t ) param1;
-
-    /* Silence warnings about unused variables. publishCount will not be used if
-     * logging is disabled. */
-    ( void ) publishCount;
-
-    /* Print the status of the completed operation. A PUBLISH operation is
-     * successful when transmitted over the network. */
-    if( pOperation->u.operation.result == IOT_MQTT_SUCCESS )
-    {
-        IotLogInfo( "MQTT %s %d successfully sent.",
-                    IotMqtt_OperationType( pOperation->u.operation.type ),
-                    ( int ) publishCount );
-    }
-    else
-    {
-        IotLogError( "MQTT %s %d could not be sent. Error %s.",
-                     IotMqtt_OperationType( pOperation->u.operation.type ),
-                     ( int ) publishCount,
-                     IotMqtt_strerror( pOperation->u.operation.result ) );
-    }
-}
 
 /*-----------------------------------------------------------*/
 
@@ -263,11 +207,12 @@ static void _mqttSubscriptionCallback( void * param1,
                                        IotMqttCallbackParam_t * const pPublish )
 {
     int acknowledgementLength = 0;
-    size_t messageNumberIndex = 0, messageNumberLength = 1;
-    IotSemaphore_t * pPublishesReceived = ( IotSemaphore_t * ) param1;
+    /* size_t messageNumberIndex = 0, messageNumberLength = 1; */
+    IotSemaphore_t * pPublishesReceived = ( IotSemaphore_t * ) param1; 
     const char * pPayload = pPublish->u.message.info.pPayload;
     char pAcknowledgementMessage[ _ACKNOWLEDGEMENT_MESSAGE_BUFFER_LENGTH ] = { 0 };
     IotMqttPublishInfo_t acknowledgementInfo = IOT_MQTT_PUBLISH_INFO_INITIALIZER;
+    IotMqttError_t pubStatus;
 
     /* Print information about the incoming PUBLISH message. */
     IotLogInfo( "Incoming PUBLISH received:\r\n"
@@ -285,77 +230,29 @@ static void _mqttSubscriptionCallback( void * param1,
                 pPublish->u.message.info.payloadLength,
                 pPayload );
 
-    /* Find the message number inside of the PUBLISH message. */
-    for( messageNumberIndex = 0; messageNumberIndex < pPublish->u.message.info.payloadLength; messageNumberIndex++ )
+
+    /* Set the members of the publish info for the acknowledgement message. */
+    acknowledgementInfo.qos = IOT_MQTT_QOS_1;
+    acknowledgementInfo.pTopicName = _ACKNOWLEDGEMENT_TOPIC_NAME;
+    acknowledgementInfo.topicNameLength = _ACKNOWLEDGEMENT_TOPIC_NAME_LENGTH;
+    acknowledgementInfo.pPayload = pAcknowledgementMessage;
+    acknowledgementInfo.payloadLength = ( size_t ) acknowledgementLength;
+    acknowledgementInfo.retryMs = _PUBLISH_RETRY_MS;
+    acknowledgementInfo.retryLimit = _PUBLISH_RETRY_LIMIT;
+
+    pubStatus = IotMqtt_TimedPublish( pPublish->mqttConnection,
+                         &acknowledgementInfo,
+                         0,
+                         _MQTT_TIMEOUT_MS);
+
+    if ( pubStatus == IOT_MQTT_SUCCESS )
     {
-        /* The payload that was published contained ASCII characters, so find
-         * beginning of the message number by checking for ASCII digits. */
-        if( ( pPayload[ messageNumberIndex ] >= '0' ) &&
-            ( pPayload[ messageNumberIndex ] <= '9' ) )
-        {
-            break;
-        }
+        IotLogInfo( "Acknowledgment message for PUBLISH sent.");
     }
-
-    /* Check that a message number was found within the PUBLISH payload. */
-    if( messageNumberIndex < pPublish->u.message.info.payloadLength )
+    else
     {
-        /* Compute the length of the message number. */
-        while( ( messageNumberIndex + messageNumberLength < pPublish->u.message.info.payloadLength ) &&
-               ( *( pPayload + messageNumberIndex + messageNumberLength ) >= '0' ) &&
-               ( *( pPayload + messageNumberIndex + messageNumberLength ) <= '9' ) )
-        {
-            messageNumberLength++;
-        }
-
-        /* Generate an acknowledgement message. */
-        acknowledgementLength = snprintf( pAcknowledgementMessage,
-                                          _ACKNOWLEDGEMENT_MESSAGE_BUFFER_LENGTH,
-                                          _ACKNOWLEDGEMENT_MESSAGE_FORMAT,
-                                          ( int ) messageNumberLength,
-                                          pPayload + messageNumberIndex );
-
-        /* Check for errors from snprintf. */
-        if( acknowledgementLength < 0 )
-        {
-            IotLogWarn( "Failed to generate acknowledgement message for PUBLISH *.*s.",
-                        ( int ) messageNumberLength,
-                        pPayload + messageNumberIndex );
-        }
-        else
-        {
-            /* Set the members of the publish info for the acknowledgement message. */
-            acknowledgementInfo.qos = IOT_MQTT_QOS_1;
-            acknowledgementInfo.pTopicName = _ACKNOWLEDGEMENT_TOPIC_NAME;
-            acknowledgementInfo.topicNameLength = _ACKNOWLEDGEMENT_TOPIC_NAME_LENGTH;
-            acknowledgementInfo.pPayload = pAcknowledgementMessage;
-            acknowledgementInfo.payloadLength = ( size_t ) acknowledgementLength;
-            acknowledgementInfo.retryMs = _PUBLISH_RETRY_MS;
-            acknowledgementInfo.retryLimit = _PUBLISH_RETRY_LIMIT;
-
-            /* Send the acknowledgement for the received message. This demo program
-             * will not be notified on the status of the acknowledgement because
-             * neither a callback nor IOT_MQTT_FLAG_WAITABLE is set. However,
-             * the MQTT library will still guarantee at-least-once delivery (subject
-             * to the retransmission strategy) because the acknowledgement message is
-             * sent at QoS 1. */
-            if( IotMqtt_Publish( pPublish->mqttConnection,
-                                 &acknowledgementInfo,
-                                 0,
-                                 NULL,
-                                 NULL ) == IOT_MQTT_STATUS_PENDING )
-            {
-                IotLogInfo( "Acknowledgment message for PUBLISH %.*s will be sent.",
-                            ( int ) messageNumberLength,
-                            pPayload + messageNumberIndex );
-            }
-            else
-            {
-                IotLogWarn( "Acknowledgment message for PUBLISH %.*s will NOT be sent.",
-                            ( int ) messageNumberLength,
-                            pPayload + messageNumberIndex );
-            }
-        }
+        IotLogWarn( "Acknowledgment message for PUBLISH %s will NOT be sent.",
+                         IotMqtt_strerror( pubStatus ) );
     }
 
     /* Increment the number of PUBLISH messages received. */
@@ -499,14 +396,15 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
     int status = EXIT_SUCCESS;
     int32_t i = 0;
     IotMqttError_t subscriptionStatus = IOT_MQTT_STATUS_PENDING;
-    IotMqttSubscription_t pSubscriptions[ _TOPIC_FILTER_COUNT ] = { IOT_MQTT_SUBSCRIPTION_INITIALIZER };
+    IotMqttSubscription_t pSubscriptions[ _SUB_TOPIC_FILTER_COUNT ] = { IOT_MQTT_SUBSCRIPTION_INITIALIZER };
 
     /* Set the members of the subscription list. */
-    for( i = 0; i < _TOPIC_FILTER_COUNT; i++ )
+    for( i = 0; i < _SUB_TOPIC_FILTER_COUNT; i++ )
     {
         pSubscriptions[ i ].qos = IOT_MQTT_QOS_1;
         pSubscriptions[ i ].pTopicFilter = pTopicFilters[ i ];
-        pSubscriptions[ i ].topicFilterLength = _TOPIC_FILTER_LENGTH;
+        /* TBD: question why original code had a len - 1, look for this if there is a problem */
+        pSubscriptions[ i ].topicFilterLength = strlen( pSubscriptions[ i ].pTopicFilter );
         pSubscriptions[ i ].callback.pCallbackContext = pCallbackParameter;
         pSubscriptions[ i ].callback.function = _mqttSubscriptionCallback;
     }
@@ -516,7 +414,7 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
     {
         subscriptionStatus = IotMqtt_TimedSubscribe( mqttConnection,
                                                      pSubscriptions,
-                                                     _TOPIC_FILTER_COUNT,
+                                                     _SUB_TOPIC_FILTER_COUNT,
                                                      0,
                                                      _MQTT_TIMEOUT_MS );
 
@@ -530,7 +428,7 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
             case IOT_MQTT_SERVER_REFUSED:
 
                 /* Check which subscriptions were rejected before exiting the demo. */
-                for( i = 0; i < _TOPIC_FILTER_COUNT; i++ )
+                for( i = 0; i < _SUB_TOPIC_FILTER_COUNT; i++ )
                 {
                     if( IotMqtt_IsSubscribed( mqttConnection,
                                               pSubscriptions[ i ].pTopicFilter,
@@ -562,7 +460,7 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
     {
         subscriptionStatus = IotMqtt_TimedUnsubscribe( mqttConnection,
                                                        pSubscriptions,
-                                                       _TOPIC_FILTER_COUNT,
+                                                       _SUB_TOPIC_FILTER_COUNT,
                                                        0,
                                                        _MQTT_TIMEOUT_MS );
 
@@ -599,137 +497,79 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
  * otherwise.
  */
 static int _publishAllMessages( IotMqttConnection_t mqttConnection,
-                                const char ** pTopicNames,
-                                IotSemaphore_t * pPublishReceivedCounter )
+                                IotSemaphore_t * pPublishReceivedCounter,
+                                CertRotate_t * cr_funcs)
 {
     int status = EXIT_SUCCESS;
-    intptr_t publishCount = 0, i = 0;
+    int pubTopicLen = 0, pubPayloadLen = 0;
     IotMqttError_t publishStatus = IOT_MQTT_STATUS_PENDING;
     IotMqttPublishInfo_t publishInfo = IOT_MQTT_PUBLISH_INFO_INITIALIZER;
-    IotMqttCallbackInfo_t publishComplete = IOT_MQTT_CALLBACK_INFO_INITIALIZER;
+    char pubTopic[ _PUB_TOPIC_LENGTH ] = { 0 };
     char pPublishPayload[ _PUBLISH_PAYLOAD_BUFFER_LENGTH ] = { 0 };
-
-    /* The MQTT library should invoke this callback when a PUBLISH message
-     * is successfully transmitted. */
-    publishComplete.function = _operationCompleteCallback;
 
     /* Set the common members of the publish info. */
     publishInfo.qos = IOT_MQTT_QOS_1;
-    publishInfo.topicNameLength = _TOPIC_FILTER_LENGTH;
-    publishInfo.pPayload = pPublishPayload;
     publishInfo.retryMs = _PUBLISH_RETRY_MS;
+    publishInfo.pTopicName = pubTopic;
+    publishInfo.pPayload = pPublishPayload;
     publishInfo.retryLimit = _PUBLISH_RETRY_LIMIT;
 
-    /* Loop to PUBLISH all messages of this demo. */
-    for( publishCount = 0;
-         publishCount < IOT_DEMO_MQTT_PUBLISH_BURST_SIZE * IOT_DEMO_MQTT_PUBLISH_BURST_COUNT;
-         publishCount++ )
+    /* Generate an publish topic */
+    pubTopicLen = snprintf( pubTopic,
+                            _PUB_TOPIC_LENGTH,
+                            "test/dev/%s/cert/request",
+                            cr_funcs->xGetSerialNumber () );
+    publishInfo.topicNameLength = pubTopicLen;
+
+    /* Check for errors from snprintf. */
+    if( pubTopicLen < 0 )
     {
-        /* Announce which burst of messages is being published. */
-        if( publishCount % IOT_DEMO_MQTT_PUBLISH_BURST_SIZE == 0 )
-        {
-            IotLogInfo( "Publishing messages %d to %d.",
-                        publishCount,
-                        publishCount + IOT_DEMO_MQTT_PUBLISH_BURST_SIZE - 1 );
-        }
-
-        /* Pass the PUBLISH number to the operation complete callback. */
-        publishComplete.pCallbackContext = ( void * ) publishCount;
-
-        /* Choose a topic name (round-robin through the array of topic names). */
-        publishInfo.pTopicName = pTopicNames[ publishCount % _TOPIC_FILTER_COUNT ];
-
+        IotLogWarn( "Failed to generate Publish topic");
+        status = EXIT_FAILURE;
+    }
+    else
+    {
+        
         /* Generate the payload for the PUBLISH. */
-        status = snprintf( pPublishPayload,
+        pubPayloadLen = snprintf( pPublishPayload,
                            _PUBLISH_PAYLOAD_BUFFER_LENGTH,
                            _PUBLISH_PAYLOAD_FORMAT,
-                           ( int ) publishCount );
+                           cr_funcs->xGetCSR());
 
         /* Check for errors from snprintf. */
-        if( status < 0 )
+        if( pubPayloadLen < 0 )
         {
-            IotLogError( "Failed to generate MQTT PUBLISH payload for PUBLISH %d.",
-                         ( int ) publishCount );
+            IotLogError( "Failed to generate MQTT PUBLISH payload for PUBLISH ");
             status = EXIT_FAILURE;
-
-            break;
         }
         else
         {
-            publishInfo.payloadLength = ( size_t ) status;
-            status = EXIT_SUCCESS;
-        }
+            publishInfo.payloadLength = ( size_t ) pubPayloadLen;
 
-        /* PUBLISH a message. This is an asynchronous function that notifies of
-         * completion through a callback. */
-        publishStatus = IotMqtt_Publish( mqttConnection,
-                                         &publishInfo,
-                                         0,
-                                         &publishComplete,
-                                         NULL );
+            IotLogError( "MQTT PUBLISH topic %s.", publishInfo.pTopicName );
+            IotLogError( "MQTT PUBLISH payload  %80s.", publishInfo.pPayload );
 
-        if( publishStatus != IOT_MQTT_STATUS_PENDING )
-        {
-            IotLogError( "MQTT PUBLISH %d returned error %s.",
-                         ( int ) publishCount,
-                         IotMqtt_strerror( publishStatus ) );
-            status = EXIT_FAILURE;
+            /* PUBLISH a message. This is an asynchronous function that notifies of
+             * completion through a callback. */
+            publishStatus = IotMqtt_TimedPublish( mqttConnection,
+                                             &publishInfo,
+                                             0,
+                                             _MQTT_TIMEOUT_MS);
 
-            break;
-        }
-
-        /* If a complete burst of messages has been published, wait for an equal
-         * number of messages to be received. Note that messages may be received
-         * out-of-order, especially if a message was lost and had to be retried. */
-        if( ( publishCount > 0 ) &&
-            ( publishCount % IOT_DEMO_MQTT_PUBLISH_BURST_SIZE == 0 ) )
-        {
-            IotLogInfo( "Waiting for %d publishes to be received.",
-                        IOT_DEMO_MQTT_PUBLISH_BURST_SIZE );
-
-            for( i = 0; i < IOT_DEMO_MQTT_PUBLISH_BURST_SIZE; i++ )
+            if( publishStatus != IOT_MQTT_SUCCESS )
             {
-                if( IotSemaphore_TimedWait( pPublishReceivedCounter,
-                                            _MQTT_TIMEOUT_MS ) == false )
-                {
-                    IotLogError( "Timed out waiting for incoming PUBLISH messages." );
-                    status = EXIT_FAILURE;
-                    break;
-                }
-            }
-
-            IotLogInfo( "%d publishes received.",
-                        i );
-        }
-
-        /* Stop publishing if there was an error. */
-        if( status == EXIT_FAILURE )
-        {
-            break;
-        }
-    }
-
-    /* Wait for the messages in the last burst to be received. This should also
-     * wait for all previously published messages. */
-    if( status == EXIT_SUCCESS )
-    {
-        IotLogInfo( "Waiting for all publishes to be received." );
-
-        for( i = 0; i < IOT_DEMO_MQTT_PUBLISH_BURST_SIZE; i++ )
-        {
-            if( IotSemaphore_TimedWait( pPublishReceivedCounter,
-                                        _MQTT_TIMEOUT_MS ) == false )
-            {
-                IotLogError( "Timed out waiting for incoming PUBLISH messages." );
+                IotLogError( "MQTT PUBLISH returned error %s.",
+                             IotMqtt_strerror( publishStatus ) );
                 status = EXIT_FAILURE;
-
-                break;
             }
-        }
 
-        if( i == IOT_DEMO_MQTT_PUBLISH_BURST_SIZE )
-        {
-            IotLogInfo( "All publishes received." );
+            if( IotSemaphore_TimedWait( pPublishReceivedCounter,
+                                        (_MQTT_TIMEOUT_MS * 2) ) == false )
+            {
+                IotLogError( "_publishAllMessages: Timed out waiting for incoming PUBLISH messages." );
+
+                status = EXIT_FAILURE;
+            }
         }
     }
 
@@ -829,7 +669,8 @@ static void BrevDemo_CertRotationInit( CertRotate_t *cr_funcs )
     ( * cr_funcs->xPutDeviceCert ) ( keyCLIENT_CERTIFICATE_PEM );
     ( * cr_funcs->xPutDevicePrivateKey ) ( keyCLIENT_PRIVATE_KEY_PEM );
     ( * cr_funcs->xPutCSR ) ( key_FIRST_CSR_PEM );
-    ( * cr_funcs->xPutSerialNumber ) ( SERIAL_NUMBER );
+    /* ( * cr_funcs->xPutSerialNumber ) ( SERIAL_NUMBER ); */
+    ( * cr_funcs->xPutSerialNumber ) ( clientcredentialIOT_THING_NAME ) ;
 }
 
 /**
@@ -863,14 +704,16 @@ static void _cleanupDemo( void )
     IotMqtt_Cleanup();
 }
 
-int BrevDemo_CurrentCertWorks( 
+int BrevDemo_GetNewCloudCert( 
     bool awsIotMqttMode,
     const char * pIdentifier,
     void * pNetworkServerInfo,
     void * pNetworkCredentialInfo,
-    const IotNetworkInterface_t * pNetworkInterface )
+    const IotNetworkInterface_t * pNetworkInterface,
+    CertRotate_t * cr_funcs)
 {
     int status;
+    int i;
 
     /* Handle of the MQTT connection used in this demo. */
     IotMqttConnection_t mqttConnection = IOT_MQTT_CONNECTION_INITIALIZER;
@@ -880,15 +723,12 @@ int BrevDemo_CurrentCertWorks(
 
     /* Counts the number of incoming PUBLISHES received (and allows the demo
      * application to wait on incoming PUBLISH messages). */
-    IotSemaphore_t publishesReceived;
+    IotSemaphore_t publishesReceived; 
 
     /* Subscribe Topics */
-    const char * pTopics[ _TOPIC_FILTER_COUNT ] =
+    const char * pSubTopics[ _SUB_TOPIC_FILTER_COUNT ] =
     {
-        IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/1",
-        IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/2",
-        IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/3",
-        IOT_DEMO_MQTT_TOPIC_PREFIX "/topic/4"
+        IOT_DEMO_MQTT_TOPIC_PREFIX "RRR7/cert/response",
     };
 
     /* Establish a new MQTT connection. */
@@ -904,12 +744,23 @@ int BrevDemo_CurrentCertWorks(
         /* Mark the MQTT connection as established. */
         connectionEstablished = true;
 
+        for ( i = 0; i < _SUB_TOPIC_FILTER_COUNT; i++ )
+        {
+            IotLogError( "MQTT SUB topic %d: %s.", i, pSubTopics[i] );
+        }
+
+
         /* Add the topic filter subscriptions used in this demo. */
         status = _modifySubscriptions( mqttConnection,
                                        IOT_MQTT_SUBSCRIBE,
-                                       pTopics,
+                                       pSubTopics,
                                        &publishesReceived );
     }
+    else
+    {
+        IotLogError( "BrevDemo_GetNewCloudCert: Failed to establish network connection");
+    }
+
 
     if( status == EXIT_SUCCESS )
     {
@@ -920,8 +771,8 @@ int BrevDemo_CurrentCertWorks(
         {
             /* PUBLISH (and wait) for all messages. */
             status = _publishAllMessages( mqttConnection,
-                                          pTopics,
-                                          &publishesReceived );
+                                          &publishesReceived,
+                                          cr_funcs);
 
             /* Destroy the incoming PUBLISH counter. */
             IotSemaphore_Destroy( &publishesReceived );
@@ -938,7 +789,7 @@ int BrevDemo_CurrentCertWorks(
         /* Remove the topic subscription filters used in this demo. */
         status = _modifySubscriptions( mqttConnection,
                                        IOT_MQTT_UNSUBSCRIBE,
-                                       pTopics,
+                                       pSubTopics,
                                        NULL );
     }
 
@@ -949,237 +800,6 @@ int BrevDemo_CurrentCertWorks(
     }
     return status;
 }
-
-#ifdef SAVE
-int _brevDemo_mqttPubCSR()
-{
-    intptr_t publishCount = 0, i = 0;
-    IotMqttError_t publishStatus = IOT_MQTT_STATUS_PENDING;
-    IotMqttPublishInfo_t publishInfo = IOT_MQTT_PUBLISH_INFO_INITIALIZER;
-    IotMqttCallbackInfo_t publishComplete = IOT_MQTT_CALLBACK_INFO_INITIALIZER;
-    char pPublishPayload[ _PUBLISH_PAYLOAD_BUFFER_LENGTH ] = { 0 };
-
-    /* The MQTT library should invoke this callback when a PUBLISH message
-     * is successfully transmitted. */
-    publishComplete.function = _operationCompleteCallback;
-
-    /* Set the common members of the publish info. */
-    publishInfo.qos = IOT_MQTT_QOS_1;
-    publishInfo.topicNameLength = _TOPIC_FILTER_LENGTH;
-    publishInfo.pPayload = pPublishPayload;
-    publishInfo.retryMs = _PUBLISH_RETRY_MS;
-    publishInfo.retryLimit = _PUBLISH_RETRY_LIMIT;
-
-    /* Announce which burst of messages is being published. */
-    if( publishCount % IOT_DEMO_MQTT_PUBLISH_BURST_SIZE == 0 )
-    {
-        IotLogInfo( "Publishing messages %d to %d.",
-                    publishCount,
-                    publishCount + IOT_DEMO_MQTT_PUBLISH_BURST_SIZE - 1 );
-    }
-
-    /* Pass the PUBLISH number to the operation complete callback. */
-    publishComplete.pCallbackContext = ( void * ) publishCount;
-
-    /* Choose a topic name (round-robin through the array of topic names). */
-    publishInfo.pTopicName = pTopicNames[ publishCount % _TOPIC_FILTER_COUNT ];
-
-    /* Generate the payload for the PUBLISH. */
-    status = snprintf( pPublishPayload,
-                       _PUBLISH_PAYLOAD_BUFFER_LENGTH,
-                       _PUBLISH_PAYLOAD_FORMAT,
-                       ( int ) publishCount );
-
-    /* Check for errors from snprintf. */
-    if( status < 0 )
-    {
-        IotLogError( "Failed to generate MQTT PUBLISH payload for PUBLISH %d.",
-                     ( int ) publishCount );
-        status = EXIT_FAILURE;
-
-        break;
-    }
-    else
-    {
-        publishInfo.payloadLength = ( size_t ) status;
-        status = EXIT_SUCCESS;
-    }
-
-    /* PUBLISH a message. This is an asynchronous function that notifies of
-     * completion through a callback. */
-    publishStatus = IotMqtt_Publish( mqttConnection,
-                                     &publishInfo,
-                                     0,
-                                     &publishComplete,
-                                     NULL );
-
-    if( publishStatus != IOT_MQTT_STATUS_PENDING )
-    {
-        IotLogError( "MQTT PUBLISH %d returned error %s.",
-                     ( int ) publishCount,
-                     IotMqtt_strerror( publishStatus ) );
-        status = EXIT_FAILURE;
-
-        break;
-    }
-
-    /* If a complete burst of messages has been published, wait for an equal
-     * number of messages to be received. Note that messages may be received
-     * out-of-order, especially if a message was lost and had to be retried. */
-    if( ( publishCount > 0 ) &&
-        ( publishCount % IOT_DEMO_MQTT_PUBLISH_BURST_SIZE == 0 ) )
-    {
-        IotLogInfo( "Waiting for %d publishes to be received.",
-                    IOT_DEMO_MQTT_PUBLISH_BURST_SIZE );
-
-        for( i = 0; i < IOT_DEMO_MQTT_PUBLISH_BURST_SIZE; i++ )
-        {
-            if( IotSemaphore_TimedWait( pPublishReceivedCounter,
-                                        _MQTT_TIMEOUT_MS ) == false )
-            {
-                IotLogError( "Timed out waiting for incoming PUBLISH messages." );
-                status = EXIT_FAILURE;
-                break;
-            }
-        }
-
-        IotLogInfo( "%d publishes received.",
-                    i );
-    }
-
-    /* Stop publishing if there was an error. */
-    if( status == EXIT_FAILURE )
-    {
-        break;
-    }
-
-    /* Wait for the messages in the last burst to be received. This should also
-     * wait for all previously published messages. */
-    if( status == EXIT_SUCCESS )
-    {
-        IotLogInfo( "Waiting for all publishes to be received." );
-
-        for( i = 0; i < IOT_DEMO_MQTT_PUBLISH_BURST_SIZE; i++ )
-        {
-            if( IotSemaphore_TimedWait( pPublishReceivedCounter,
-                                        _MQTT_TIMEOUT_MS ) == false )
-            {
-                IotLogError( "Timed out waiting for incoming PUBLISH messages." );
-                status = EXIT_FAILURE;
-
-                break;
-            }
-        }
-
-        if( i == IOT_DEMO_MQTT_PUBLISH_BURST_SIZE )
-        {
-            IotLogInfo( "All publishes received." );
-        }
-    }
-
-    return status;
-}
-#endif
-
-int _mqttRcvNewCloudCert()
-{
-    return EXIT_SUCCESS;
-}
-
-#ifdef SAVE
-int BrevDemo_GetNewCloudCert(
-    bool awsIotMqttMode,
-    const char * pIdentifier,
-    void * pNetworkServerInfo,
-    void * pNetworkCredentialInfo,
-    const IotNetworkInterface_t * pNetworkInterface,
-    CertRotate_t cr_funcs)
-{
-    int status = EXIT_SUCCESS;
-    
-    status = _brevDemo_GenCSR(cr_funcs);
-
-    /* Handle of the MQTT connection used in this demo. */
-    IotMqttConnection_t mqttConnection = IOT_MQTT_CONNECTION_INITIALIZER;
-
-    /* Flag for tracking which cleanup functions must be called. */
-    int connectionEstablished = false;
-
-    /* Counts the number of incoming PUBLISHES received (and allows the demo
-     * application to wait on incoming PUBLISH messages). */
-    IotSemaphore_t publishesReceived;
-
-    char * pSubTopics = "cdf/certificates/1234567/responseCSR",
-    char * pPubTopics = "cdf/certificates/1234567/requestCSR",
-
-    /* Establish a new MQTT connection. */
-    status = _establishMqttConnection( awsIotMqttMode,
-                                       pIdentifier,
-                                       pNetworkServerInfo,
-                                       pNetworkCredentialInfo,
-                                       pNetworkInterface,
-                                       &mqttConnection );
-
-    if( status == EXIT_SUCCESS )
-    {
-        /* Mark the MQTT connection as established. */
-        connectionEstablished = true;
-
-        /* Add the topic filter subscriptions used in this demo. */
-        status = _modifyCSRSubscriptions( mqttConnection,
-                                       IOT_MQTT_SUBSCRIBE,
-                                       pGetCertSubTopics);
-    }
-
-    if( status == EXIT_SUCCESS )
-    {
-        /* Create the semaphore to count incoming PUBLISH messages. */
-        if( IotSemaphore_Create( &publishesReceived,
-                                 0,
-                                 IOT_DEMO_MQTT_PUBLISH_BURST_SIZE ) == true )
-        {
-            if (status == EXIT_SUCCESS)
-            {
-                status = _brevDemo_mqttPubCSR();
-                if (status == EXIT_SUCCESS)
-                {
-                    status = _mqttRcvNewCloudCert();
-                }
-            }
-
-            /* Get the new Cloud Cert */
-            status = _mqttGetNewCloudCert( mqttConnection,
-                                      pGetCertSubTopics,
-                                      pGetCertPubTopics,
-                                      &publishesReceived );
-
-            /* Destroy the incoming PUBLISH counter. */
-            IotSemaphore_Destroy( &publishesReceived );
-        }
-        else
-        {
-            /* Failed to create incoming PUBLISH counter. */
-            status = EXIT_FAILURE;
-        }
-    }
-
-    if( status == EXIT_SUCCESS )
-    {
-        /* Remove the topic subscription filters used in this demo. */
-        status = _modifySubscriptions( mqttConnection,
-                                       IOT_MQTT_UNSUBSCRIBE,
-                                       pGetCertSubTopics,
-                                       NULL );
-    }
-
-    /* Disconnect the MQTT connection if it was established. */
-    if( connectionEstablished == true )
-    {
-        IotMqtt_Disconnect( mqttConnection, 0 );
-    }
-    return status;
-}
-#endif
 
 int BrevDemo_RotateCert()
 {
@@ -1239,16 +859,16 @@ int RunMqttDemo( bool awsIotMqttMode,
         {
             /* 
              * Loop through:
-             *  1) BrevDemo_CurrentCertWorks()
-             *  2) BrevDemo_GetNewCloudCert()
+             *  1) BrevDemo_GetNewCloudCert()
              *  3) BrevDemo_RotateCert()
              */
-            status = BrevDemo_CurrentCertWorks(
+            status = BrevDemo_GetNewCloudCert(
                 awsIotMqttMode,
                 pIdentifier,
                 pNetworkServerInfo,
                 pNetworkCredentialInfo,
-                pNetworkInterface);
+                pNetworkInterface,
+                &cr_funcs);
 
             
             pLocal = (LocalIotNetworkServerInfoAfr_t *) pNetworkServerInfo;
@@ -1268,21 +888,8 @@ int RunMqttDemo( bool awsIotMqttMode,
                 break;
             }
 
+
 #ifdef SAVE
-            status = BrevDemo_GetNewCloudCert(
-                awsIotMqttMode,
-                pIdentifier,
-                pNetworkServerInfo,
-                pNetworkCredentialInfo,
-                pNetworkInterface
-                &cr_funcs);
-
-            if (status != EXIT_SUCCESS)
-            {
-                IotLogInfo( "Could not get new cert.");
-                break;
-            }
-
             status = BrevDemo_RotateCert(
                 awsIotMqttMode,
                 pIdentifier,
@@ -1322,18 +929,19 @@ int RunMqttDemo( bool awsIotMqttMode,
  * modify mqtt connection to use cert from cr_funcs
  * int _brevDemo_GenCSR()
  * int _brevDemo_mqttPubCSR()
- * int _mqttRcvNewCloudCert()
  * int BrevDemo_RotateCert()
- *
- * cr_funcs->xPutCertStateNVM   = &prvBrevDemo_PutCertStateNVM;
- * cr_funcs->xGetCertStateNVM   = &prvBrevDemo_GetCertStateNVM;
- * cr_funcs->xPutDeviceCert     = &prvBrevDemo_PutDeviceCert;
- * cr_funcs->xGetDeviceCert     = &prvBrevDemo_GetDeviceCert;
- * cr_funcs->xGetCSR            = &prvBrevDemo_GetCSR;
- * cr_funcs->xGetSerialNumber   = &prvBrevDemo_GetSerialNumber;
  *
  * DONE functions
  * void BrevDemo_CertRotationInit( CertRotate_t *cr_funcs)
- * int BrevDemo_CurrentCertWorks( 
  * 
+ * pxCR_Write  xWriteCertRotationStateNVM;
+ * pxCR_Read   xReadCertRotationStateNVM;
+ * pxCR_Put    xPutDeviceCert;
+ * pxCR_Get    xGetDeviceCert;
+ * pxCR_Put    xPutDevicePrivateKey;
+ * pxCR_Get    xGetDevicePrivateKey;
+ * pxCR_Put    xPutCSR;
+ * pxCR_Get    xGetCSR;
+ * pxCR_Put    xPutSerialNumber;
+ * pxCR_Get    xGetSerialNumber;
  */
