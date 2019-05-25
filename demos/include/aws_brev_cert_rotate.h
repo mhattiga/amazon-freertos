@@ -73,7 +73,7 @@ typedef enum
 {
     CR_GET_CERT,  /* Get Cert */
     CR_ACK_CERT   /* Ack Cert was received */
-} CR_STEP;
+} CR_MQTT_STEP;
 
 /* 
  * Store a null terminated string
@@ -105,5 +105,11 @@ typedef struct _CertRotate_Functions {
     pxCR_Put    xPutSerialNumber;
     pxCR_Get    xGetSerialNumber;
 } CertRotate_t;
+
+typedef struct _subCallBackParamsStruct {
+    IotSemaphore_t * pPublishesReceived;
+    CertRotate_t * crFuncs;
+    CR_MQTT_STEP *mqttStep;
+} CR_subCallBackParams_t;
 
 #endif
