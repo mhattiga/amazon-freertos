@@ -28,32 +28,19 @@
 #define __AWS_CLIENTCREDENTIAL__H__
 
 /*
- * Connect to demo server, not the normal AWS IoT Endpoint
- */
-#define DEMO_SERVER_AWS_CLIENTCREDENTIAL
-
-/*
  * Include for device certificate and private key
  */
 #include "aws_clientcredential_keys.h"
 
-#ifdef DEMO_SERVER_AWS_CLIENTCREDENTIAL
 /*
  * MQTT Broker endpoint.
  */
 static const char clientcredentialMQTT_BROKER_ENDPOINT[] = "a73enj8qkbbnp-ats.iot.us-west-2.amazonaws.com";
 
-#else 
-/*
- * MQTT Broker endpoint.
- */
-static const char clientcredentialMQTT_BROKER_ENDPOINT[] = "a27xdhuepxh1ys-ats.iot.us-west-2.amazonaws.com";
-#endif
-
 
 /* Use of a "define" and not a "static const" here to be able to
 * use pre-compile concatenation on the string. */
-#define clientcredentialIOT_THING_NAME "RRR7"
+#define clientcredentialIOT_THING_NAME "thing3"
 
 /*
  * Port number the MQTT broker is using.

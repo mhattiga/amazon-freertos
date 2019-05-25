@@ -21,8 +21,17 @@ def prereq():
     with open('configure.json') as file:
         json_text = json.load(file)
 
-    # Create a Thing
+    # If using existing policy, make sure policy exists before 
+    # creating the thing
     thing_name = json_text['thing_name']
+    policy_name = json_text.get('thing_policy_name', None)
+    if policy_name != None :
+        print("Using existing policy {}".format(policy_name))
+        policy_document = ''
+        policy_obj = policy.Policy(policy_name, policy_document)
+        assert policy_obj.exists() == True, "Policy {} does not exist.".format(policy_name)
+
+    # Create a Thing
     thing_obj = thing.Thing(thing_name)
     if not thing_obj.create():
 
@@ -57,16 +66,19 @@ def prereq():
         os.chmod(private_key_pem_file_path, 0o444)
         private_key_pem_file.close()
 
-        # Create a Policy
-        policy_document = misc.create_policy_document()
-        policy_name = thing_name + '_amazon_freertos_policy'
-        policy_obj = policy.Policy(policy_name, policy_document)
-        policy_obj.create()
+        # Create a Policy if one does not exist
+        if policy_name == None :
+            print("Creating new policy")
+            policy_document = misc.create_policy_document()
+            policy_name = thing_name + '_amazon_freertos_policy'
+            policy_obj = policy.Policy(policy_name, policy_document)
+            policy_obj.create()
 
         # Attach certificate to Thing
         cert_obj.attach_thing(thing_name)
 
         # Attach policy to certificate
+        print("policy_name = {}".format(policy_name))
         cert_obj.attach_policy(policy_name)
 
 def update_credential_file():
@@ -138,9 +150,13 @@ def delete_prereq():
     os.remove(private_key_pem_filename)
 
     # Delete policy
-    policy_name = thing_name + '_amazon_freertos_policy'
-    policy_obj = policy.Policy(policy_name)
-    policy_obj.delete()
+    policy_name = json_text.get('thing_policy_name', None)
+    if policy_name == None :
+        policy_name = thing_name + '_amazon_freertos_policy'
+        policy_obj = policy.Policy(policy_name)
+        policy_obj.delete()
+    else :
+        print('Did not delete pre-existing policy {}'.format(policy_name))
 
 def cleanup_creds():
     with open('configure.json') as file:
