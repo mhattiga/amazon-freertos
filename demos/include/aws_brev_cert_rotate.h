@@ -26,6 +26,7 @@
 #ifndef _AWS_BREV_CERT_ROTATE_H_
 #define _AWS_BREV_CERT_ROTATE_H_
 
+#include "platform/iot_network_afr.h"
 /*
  * PEM-encoded Cert Signing Request (CSR)
  *

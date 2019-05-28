@@ -66,12 +66,14 @@
 #define _CR_TOPIC_SUFFIX_LEN     20
 #define _CR_TOPIC_LEN            ( sizeof(clientcredentialIOT_THING_NAME) +_CR_TOPIC_SUFFIX_LEN +\
                                    _CR_TOPIC_PREFIX_LEN )
-#define _CR_ACK_RESPONSE_STR            "OK"
+#define _CR_ACK_RESPONSE_STR            "{\"message\":\"OK\"}"
 #define _CR_GET_RESPONSE_STR            "{\"certificate\":\"-----BEGIN CERTIFICATE-----"
 #define _CR_GET_RESPONSE_OFFSET  ( 16 )
+#define _CR_ACK_RESPONSE_OFFSET  ( 16 )
 #define _PUBLISH_PAYLOAD_BUFFER_LENGTH   (_CR_CSR_SIZE + 50)
 #define _MAX_MQTT_PUBLISH_ATTEMPTS       ( 4 ) 
 #define _MAX_MQTT_CONNECT_ATTEMPTS       ( 4 ) 
+#define _MAX_MQTT_RECONNECTS             ( 2 ) 
 static CERT_ROTATE_STATE _cr_state;
 static char _cr_certificate[ _CR_CERTIFICATE_SIZE ];
 static char _cr_private_key[ _CR_PRIVATE_KEY_SIZE ];
@@ -207,13 +209,9 @@ static void _mqttSubscriptionCallback( void * param1,
     /* Print information about the incoming PUBLISH message. */
     IotLogInfo( "Incoming PUBLISH received:\n"
                 "Subscription topic filter: %s\n"
-                "Publish topic name: %s\n"
-                "Publish retain flag: %d\n"
-                "Publish QoS: %d\n",
+                "Publish topic name: %s\n",
                 pPublish->u.message.pTopicFilter,
-                pPublish->u.message.info.pTopicName,
-                pPublish->u.message.info.retain,
-                pPublish->u.message.info.qos);
+                pPublish->u.message.info.pTopicName);
 
     IotLogInfo( "Sub Payload Len: %d", strlen(pPayload ));
     IotLogInfo( "Sub Payload: %100s", pPayload );
@@ -236,13 +234,13 @@ static void _mqttSubscriptionCallback( void * param1,
     if ( pubStatus == IOT_MQTT_SUCCESS )
     {
         pubStatus = IOT_MQTT_BAD_PARAMETER;
-        IotLogInfo( "Acknowledgment message for PUBLISH sent.");
+        /* IotLogInfo( "Acknowledgment message for PUBLISH sent."); */
         if (*mqttStep == CR_GET_CERT)
         {
             if (strncmp(pPayload, _CR_GET_RESPONSE_STR, _CR_GET_RESPONSE_OFFSET) == 0)
             {
                 certStr = (char *) (pPayload + _CR_GET_RESPONSE_OFFSET);
-                IotLogInfo( "Certificate : %100s", certStr);
+                /* IotLogInfo( "Certificate : %100s", certStr); */
                 if (crFuncs->xPutDeviceCert(certStr) == EXIT_SUCCESS)
                 {
                     pubStatus = IOT_MQTT_SUCCESS;
@@ -250,12 +248,12 @@ static void _mqttSubscriptionCallback( void * param1,
             }
             else
             {
-                IotLogInfo( "callback strcmp failed");
+                IotLogError( "callback strcmp failed");
             }
         }
         else if (*mqttStep == CR_ACK_CERT)
         {
-            if (strcmp(pPayload, _CR_ACK_RESPONSE_STR) == 0)
+            if (strncmp(pPayload, _CR_ACK_RESPONSE_STR, _CR_ACK_RESPONSE_OFFSET)  == 0)
             {
                 pubStatus = IOT_MQTT_SUCCESS;
             }
@@ -366,10 +364,12 @@ static int _establishMqttConnection( bool awsIotMqttMode,
     /* Establish the MQTT connection. */
     if( status == EXIT_SUCCESS )
     {
-        IotLogInfo( "MQTT demo client identifier is %.*s (length %hu).",
-                    connectInfo.clientIdentifierLength,
-                    connectInfo.pClientIdentifier,
-                    connectInfo.clientIdentifierLength );
+
+        /* IotLogInfo( "MQTT demo client identifier is %.*s (length %hu).",
+         *          connectInfo.clientIdentifierLength,
+         *          connectInfo.pClientIdentifier,
+         *          connectInfo.clientIdentifierLength ); 
+         */
 
         connectStatus = IotMqtt_Connect( &networkInfo,
                                          &connectInfo,
@@ -421,7 +421,7 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
         pSubscriptions[ i ].topicFilterLength = strlen( pSubscriptions[ i ].pTopicFilter );
         pSubscriptions[ i ].callback.pCallbackContext = pCallbackParameter;
         pSubscriptions[ i ].callback.function = _mqttSubscriptionCallback;
-        IotLogInfo( "Subscribe filter %s.", pSubscriptions[ i ].pTopicFilter );
+        /* IotLogInfo( "Subscribe filter %s.", pSubscriptions[ i ].pTopicFilter ); */
     }
 
     /* Modify subscriptions by either subscribing or unsubscribing. */
@@ -437,7 +437,7 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
         switch( subscriptionStatus )
         {
             case IOT_MQTT_SUCCESS:
-                IotLogInfo( "All demo topic filter subscriptions accepted." );
+                /* IotLogInfo( "All demo topic filter subscriptions accepted." ); */
                 break;
 
             case IOT_MQTT_SERVER_REFUSED:
@@ -450,9 +450,10 @@ static int _modifySubscriptions( IotMqttConnection_t mqttConnection,
                                               pSubscriptions[ i ].topicFilterLength,
                                               NULL ) == true )
                     {
-                        IotLogInfo( "Topic filter %.*s was accepted.",
-                                    pSubscriptions[ i ].topicFilterLength,
-                                    pSubscriptions[ i ].pTopicFilter );
+                        /* IotLogInfo( "Topic filter %.*s was accepted.",
+                         *           pSubscriptions[ i ].topicFilterLength,
+                         *           pSubscriptions[ i ].pTopicFilter );
+                         */
                     }
                     else
                     {
@@ -524,9 +525,6 @@ static int _publishAllMessages( IotMqttConnection_t mqttConnection,
     IotMqttPublishInfo_t publishInfo = IOT_MQTT_PUBLISH_INFO_INITIALIZER;
     char pPublishPayload[ _PUBLISH_PAYLOAD_BUFFER_LENGTH ] = { 0 };
 
-    IotLogError( "_publishAllMessages: start");
-    IotClock_SleepMs( 1000 );
-
     mqttStep = subCallBackParams->mqttStep;
     pPublishesReceived = subCallBackParams->pPublishesReceived;
     crFuncs = subCallBackParams->crFuncs;
@@ -542,44 +540,32 @@ static int _publishAllMessages( IotMqttConnection_t mqttConnection,
     pubTopicLen = strlen ((*pubTopics)) ;
     publishInfo.topicNameLength = pubTopicLen;
 
-    IotLogError( "_publishAllMessages: one");
-    IotClock_SleepMs( 1000 );
     /* Generate the payload for the PUBLISH. */
     if (*mqttStep == CR_GET_CERT)
     {
-        IotLogError( "_publishAllMessages: MQTT Step = CR_GET_CERT");
-        IotClock_SleepMs( 1000 );
         pubPayloadLen = snprintf( pPublishPayload, _PUBLISH_PAYLOAD_BUFFER_LENGTH,
                            "{\"csr\": \"%s\"}",
                            crFuncs->xGetCSR());
     }
     else if (*mqttStep == CR_ACK_CERT)
     {
-        IotLogError( "_publishAllMessages: MQTT Step = CR_ACK_CERT");
-        IotClock_SleepMs( 1000 );
-        strcpy( pPublishPayload, "");
+        strcpy( pPublishPayload, "{}");
         pubPayloadLen = 2;
     }
     else
     {
         IotLogError( "_publishAllMessages: MQTT Step ERROR");
-        IotClock_SleepMs( 1000 );
     }
 
     /* Check for errors in loading the payload */
     if( pubPayloadLen <= 0 )
     {
         IotLogError( "_publishAllMessages: Failed to generate MQTT PUBLISH payload for PUBLISH ");
-        IotClock_SleepMs( 1000 );
         status = EXIT_FAILURE;
     }
     else
     {
         publishInfo.payloadLength = ( size_t ) pubPayloadLen;
-
-        IotLogError( "_publishAllMessages: MQTT PUBLISH topic %s.", publishInfo.pTopicName );
-        IotLogError( "_publishAllMessages: MQTT PUBLISH payload .%80s.", publishInfo.pPayload );
-        IotClock_SleepMs( 1000 );
 
         /* PUBLISH a message. This is an asynchronous function that notifies of
          * completion through a callback. */
@@ -592,7 +578,6 @@ static int _publishAllMessages( IotMqttConnection_t mqttConnection,
         {
             IotLogError( "_publishAllMessages: MQTT PUBLISH returned error %s.",
                          IotMqtt_strerror( publishStatus ) );
-            IotClock_SleepMs( 1000 );
             status = EXIT_FAILURE;
         }
         /* Wait on the semaphonre twice as long as the pub timeout */
@@ -600,14 +585,10 @@ static int _publishAllMessages( IotMqttConnection_t mqttConnection,
                                     (_MQTT_TIMEOUT_MS * 2) ) == false )
         {
             IotLogError( "_publishAllMessages: Timed out waiting for incoming PUBLISH messages." );
-            IotClock_SleepMs( 1000 );
 
             status = EXIT_FAILURE;
         }
     }
-    IotLogError( "_publishAllMessages: exit status = %d, EXIT_SUCCESS = %d.", status, EXIT_SUCCESS);
-    IotClock_SleepMs( 1000 );
-
     return status;
 }
 
@@ -676,7 +657,7 @@ static char * prvBrevDemo_GetCSR ( void )
 
 static void BrevDemo_CertRotationInit( CertRotate_t *crFuncs )
 {
-    IotLogInfo( "************** CERT ROTATION INIT **********");
+    /* IotLogInfo( "************** CERT ROTATION INIT **********"); */
     crFuncs->xWriteCertRotationStateNVM = &prvBrevDemo_WriteState;
     crFuncs->xReadCertRotationStateNVM  = &prvBrevDemo_ReadState;
     crFuncs->xPutDeviceCert             = &prvBrevDemo_PutDeviceCert;
@@ -755,16 +736,12 @@ int _mqttStep(
     }
     else
     {
-        IotLogError( "_mqttStep: subscribe topics succeeded");
-        IotClock_SleepMs( 1000 );
 
         /* Create the semaphore to count incoming PUBLISH messages. */
         if( IotSemaphore_Create( &publishesReceived,
                                  0,
                                  IOT_DEMO_MQTT_PUBLISH_BURST_SIZE ) == true )
         {
-            IotLogError( "_mqttStep: created Semaphore");
-            IotClock_SleepMs( 1000 );
             status = EXIT_FAILURE;
 
             for (mqtt_publish_attempts = 0; 
@@ -773,14 +750,10 @@ int _mqttStep(
                  mqtt_publish_attempts++)
             {
                 /* PUBLISH (and wait) for all messages. */
-                IotLogError( "_mqttStep: for loop %d", mqtt_publish_attempts);
-                IotClock_SleepMs( 1000 );
                 status = _publishAllMessages( mqttConnection,
                                               &subCallBackParams,
                                               pubTopics);
 
-                IotLogError( "_mqttStep: post for loop status = %d, EXIT_SUCCESS = %d", status, EXIT_SUCCESS);
-                IotClock_SleepMs( 1000 );
             }
             /* Destroy the incoming PUBLISH counter. */
             IotSemaphore_Destroy( &publishesReceived );
@@ -873,9 +846,6 @@ int BrevDemo_GetNewCert(
                         crFuncs,
                         &mqttStep);
 
-            IotLogError( "***********************post get cert, cert is %100s", crFuncs->xGetDeviceCert() );
-            IotClock_SleepMs( 1000 );
-
             if (status == EXIT_SUCCESS)
             {
                 /* Acknowledge the new cert */
@@ -934,9 +904,10 @@ int RunMqttDemo( bool awsIotMqttMode,
                  void * pNetworkCredentialInfo,
                  const IotNetworkInterface_t * pNetworkInterface )
 {
-
+    IotNetworkCredentialsAfr_t * pNetCreds = (IotNetworkCredentialsAfr_t *)pNetworkCredentialInfo;
     LocalIotNetworkServerInfoAfr_t * pLocal; 
     int status = EXIT_SUCCESS;
+    int mqtt_connects;
 
     /* Flags for tracking which cleanup functions must be called. */
     bool librariesInitialized = false;
@@ -946,18 +917,21 @@ int RunMqttDemo( bool awsIotMqttMode,
 
     /* Initialize the libraries required for this demo. */
     status = _initializeDemo( &crFuncs );
+    /*pNetCreds->pClientCert =  "hello bad cert";*/
 
     if( status == EXIT_SUCCESS )
     {
         /* Mark the libraries as initialized. */
         librariesInitialized = true;
 
-        while (1)
+        for (mqtt_connects = 0; 
+             mqtt_connects < _MAX_MQTT_RECONNECTS; 
+             mqtt_connects++)
         {
+            IotLogInfo( "Connecting with Device Cert = %70s\n", pNetCreds->pClientCert);
             /* 
-             * Loop through:
-             *  1) BrevDemo_GetNewCert()
-             *  3) BrevDemo_RotateCert()
+             *  1) Get a new cert: BrevDemo_GetNewCert()
+             *  2) Use new cert to get another Cert
              */
             status = BrevDemo_GetNewCert(
                 awsIotMqttMode,
@@ -966,44 +940,31 @@ int RunMqttDemo( bool awsIotMqttMode,
                 pNetworkCredentialInfo,
                 pNetworkInterface,
                 &crFuncs);
-
             
-            pLocal = (LocalIotNetworkServerInfoAfr_t *) pNetworkServerInfo;
-            IotLogInfo( "Host Name = %s", (LocalIotNetworkServerInfoAfr_t *) pLocal->pHostName) ;
-
-            IotLogInfo( "Device Cert = %70s\n", (*crFuncs.xGetDeviceCert)() ); 
-            IotLogInfo( "Length of Device Cert = %d", strlen( (*crFuncs.xGetDeviceCert)() ));
-            IotLogInfo( "Private Key = %70s\n", (*crFuncs.xGetDevicePrivateKey)() ); 
-            IotLogInfo( "Length of Private Key = %d", strlen( (*crFuncs.xGetDevicePrivateKey)() )); 
-            IotLogInfo( "CSR = %70s\n", (*crFuncs.xGetCSR )() ); 
-            IotLogInfo( "Length of CSR = %d", strlen( ( *crFuncs.xGetCSR )() ));
-            IotLogInfo( "State = %d", (uint8_t) (*crFuncs.xReadCertRotationStateNVM)() ); 
-
-            if (status != EXIT_SUCCESS)
+            if (status == EXIT_SUCCESS)
             {
-                IotLogInfo( "Current cert is not working.");
-                break;
+                pLocal = (LocalIotNetworkServerInfoAfr_t *) pNetworkServerInfo;
+                IotLogInfo( "Host Name = %s", (LocalIotNetworkServerInfoAfr_t *) pLocal->pHostName) ;
+
+                IotLogInfo( "New Device Cert = %70s\n", (*crFuncs.xGetDeviceCert)() ); 
+                IotLogInfo( "Length of New Device Cert = %d", strlen( (*crFuncs.xGetDeviceCert)() ));
+                IotLogInfo( "CSR = %70s\n", (*crFuncs.xGetCSR )() ); 
+                IotLogInfo( "Length of CSR = %d", strlen( ( *crFuncs.xGetCSR )() ));
+
+
+                /* Use the new credentials. */
+                pNetCreds->pClientCert =  (*crFuncs.xGetDeviceCert)(); 
+
+                IotLogInfo( "*********** SUCCESS: HAVE NEW CERT  *************");
             }
-
-
-#ifdef SAVE
-            status = BrevDemo_RotateCert(
-                awsIotMqttMode,
-                pIdentifier,
-                pNetworkServerInfo,
-                pNetworkCredentialInfo,
-                pNetworkInterface
-                &crFuncs);
-            if (status != EXIT_SUCCESS)
+            else
             {
-                IotLogInfo( "Could not get new cert.");
-                break;
+                IotLogInfo( "*********** FAILURE: DID NOT GET NEW CERT  *************");
             }
-#endif
             IotClock_SleepMs(_CERT_ROTATION_DELAY_MS);
         }
-
     }
+    IotLogInfo( "*********** Exiting Demo  *************");
 
     /* Clean up libraries if they were initialized. */
     if( librariesInitialized == true )
